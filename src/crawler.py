@@ -12,18 +12,15 @@ import os
 PREFIXES = ["http://", "https://"]
 
 
-def get_download_url(url: str, src: str) -> str:
-    print(f"Before: {url}; {src}")
-    src = os.path.normpath(src).replace("\\", "/")
-    print(f"After: {url}; {src}")
-    if src[0] == "/":  # referencing root
-        return url_domain(url) + src
-    if src[:2] == "./":  # referencing current directory
-        return url_previous_folder(url) + src[1:]
-    if src[:3] == "../":  # referencing parent directory
-        return url_previous_folder(url_previous_folder(url)) + src[2:]
-    # referencing current directory
-    return url_previous_folder(url) + "/" + src
+def get_full_url(url: str, src: str) -> str:
+    if not src: return ""
+    if src[0] != "/": full = url_previous_folder(url) + "/" + src
+    else: full = url_domain(url) + src
+    for pre in PREFIXES:
+        if pre not in full: continue
+        k = pre
+        full = full.removeprefix(pre)
+    return k + os.path.normpath(full).replace("\\", "/")
 
 
 def crawl(
@@ -57,8 +54,9 @@ def crawl(
             
             num_a_tags = 0
             for a_tag in soup.select("a"):
-                link = a_tag.attrs.get('href')
-                if url_domain(link) not in white_list or url_domain(link) in black_list: continue
+                link = get_full_url(url, a_tag.attrs.get('href'))
+                if not link: continue
+                if white_list and url_domain(link) not in white_list or url_domain(link) in black_list: continue
                 if link in visited or link in to_visit or link in visiting: continue
                 to_visit.add(link)
                 num_a_tags += 1
@@ -66,7 +64,8 @@ def crawl(
             
             count = 0
             for element in soup.select(css_selector):
-                down_url = get_download_url(url, element.attrs.get("src"))
+                down_url = get_full_url(url, element.attrs.get("src"))
+                if not down_url: continue
                 if down_url in to_download and not allow_duplicate_to_download_links: continue
                 to_download.append(down_url)
                 count += 1
@@ -78,9 +77,9 @@ def crawl(
                 warnings.warn(f"Crawled to the maximum allowed number of sites; skipped over at least {len(to_visit)}")
                 return to_download, len(visited), min_on_page, max_on_page
         if verbose: print(f"Found {len(to_visit)} links to visit; visited a total of {len(visited)} pages.")
+        if not len(to_visit): break
         visiting = to_visit.copy()
-        to_visit = []
-    
+        to_visit = set()
     return to_download, len(visited), min_on_page, max_on_page
 
 
