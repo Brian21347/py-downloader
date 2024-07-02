@@ -25,7 +25,6 @@ class TestDownload(unittest.TestCase):
     def test_download(self):
         PORT = randint(1_000, 10_000)
 
-
         def testing_func(httpd: TCPServer):
             url = f"http://localhost:{PORT}/test/websites/testing_website.html"
 
@@ -75,6 +74,34 @@ class TestDownload(unittest.TestCase):
         print("Removing created directory...")
         os.rmdir("test/test_downloads")
         print("Finished!")
+        print("=" * 15)
+    
+    def test_crawl(self):
+        PORT = randint(1_000, 10_000)
+
+        def testing_func(httpd: TCPServer):
+            url = f"http://localhost:{PORT}/test/websites/testing_website.html"
+
+            to_download, *args = crawl(url, depth=3, css_selector="img", max_sites=-1, allow_duplicate_to_download_links=False, verbose=True)
+
+            httpd.shutdown()
+
+            self.assertEqual(args, [6, 0, 1])
+            self.assertEqual(len(to_download), 1)
+            print("Finished")
+            print("=" * 15)
+
+
+        addr = ("", PORT)
+        with TCPServer(addr, SimpleHTTPRequestHandler) as httpd:
+            server_thread = Thread(target=httpd.serve_forever)
+            tests_thread = Thread(target=testing_func, args=([httpd]))
+
+            server_thread.start()
+            tests_thread.start()
+
+            tests_thread.join()
+            server_thread.join()
 
 
 if __name__ == "__main__":
