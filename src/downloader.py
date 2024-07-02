@@ -7,13 +7,14 @@ import os
 import warnings
 import requests
 from typing import Literal
+from tqdm import tqdm
 
 
 BLOCK_SIZE = 2 ** 15  # TODO: make this a dynamic value to maximize the speed of the download
 
 
 
-def check_override(full_path: str, override: Literal["Edit name", "Skip", "Strict", "Write over"]) -> None | str:
+def check_override(full_path: str, override: Literal["Edit name", "Skip", "Strict", "Write over"], verbose: bool = False) -> None | str:
     """
     Checks if there will be a collision and changes where the file will be downloaded, if necessary.
 
@@ -29,11 +30,15 @@ def check_override(full_path: str, override: Literal["Edit name", "Skip", "Stric
         The location where the file will be downloaded or None if it should not be downloaded.
     """
     file_exists = os.path.isfile(full_path)
-    if not file_exists: return full_path
-    if override == "Skip": return None
-    if override == "Strict": raise FileExistsError
+    if not file_exists: 
+        if verbose: print(f"A file does not exist at {full_path}; downloading to that location.")
+        return full_path
+    if override == "Skip": 
+        if verbose: print(f"A file exists at {full_path}, skipping the download.")
+        return None
+    if override == "Strict": raise FileExistsError(f"A file exists at {full_path}.")
     if override == "Write over":
-        warnings.warn(f"Overriding a file at the following path: \"{full_path}\"")
+        warnings.warn(f"Overriding a file at the following path: \"{full_path}\".")
         return full_path
     replace_num = 1
     original_full_path = full_path[:]
@@ -42,6 +47,7 @@ def check_override(full_path: str, override: Literal["Edit name", "Skip", "Stric
         if i == -1: raise ValueError("No File extension")
         full_path = f"{original_full_path[:i]} ({replace_num}){original_full_path[i:]}"
         replace_num += 1
+    if verbose: print(f"A file exists at {original_full_path}; writing to {full_path}.")
     return full_path
 
 
@@ -49,7 +55,8 @@ def download(
         url: str, 
         path: str, 
         file_name: str = None, 
-        override: Literal["Edit name", "Skip", "Strict", "Write over"] = "Edit name"
+        override: Literal["Edit name", "Skip", "Strict", "Write over"] = "Edit name",  # TODO: add "Skip if same" which will check that the file being downloaded and the pre-existing file have the same file sizes
+        verbose: bool = False
     ) -> bool:
     """
     Downloads a file from a remote source to a specified location using html packets.
@@ -63,6 +70,7 @@ def download(
             `Skip`: Do not download the file and do not throw an error.
             `Strict`: Do not download the file and throw an error.
             `Write over`: Write over the pre-existing file.
+        verbose: If set to true, the function will produce more detailed output
     
     raises:
         FileExistsError: If there is a pre-existing file and override is set to `Strict`.
@@ -71,13 +79,16 @@ def download(
     returns:
         True if the file is successfully downloaded or has been skipped.
     """
+    if verbose: print(f"Getting response from \"{url}\"...")
     response = requests.get(url, stream=True)
+    if verbose: print(f"Response headers: {response.headers}")
 
     if not response.ok:
         warnings.warn(f"Response was not ok: \"{response}\"")
         return False
 
     if file_name is not None:
+        if verbose: print("No file name specified, using the filename of the file on the website's side.")
         file_type = ""
         i = url.rfind(".")
         if i == -1:
@@ -87,17 +98,23 @@ def download(
         else:
             file_type = url[i:]
         file_name += file_type
+        if verbose: print(f"Using the file name: \"{file_name}\"")
     else:
-        file_type = url[url.rfind("/") + 1:]
+        if verbose: print("Finding the name of the file...")
+        file_name = url[url.rfind("/") + 1:]
+        if verbose: print(f"Found \"{file_name}\".")
     
     full_path = os.path.join(path, file_name)
+    if verbose: print(f"The full path of where the file will be downloaded is {full_path}...")
 
-    ret = check_override(full_path, override)
+    ret = check_override(full_path, override, verbose=verbose)
     if ret is None: return True  # skipped
     full_path = ret
 
-    with open(full_path, 'wb') as handle:
+    if verbose: print(f"Downloading...")
+
+    with open(full_path, 'wb') as file:
         for block in response.iter_content(BLOCK_SIZE):
             if not block: break
-            handle.write(block)
+            file.write(block)
     return True
