@@ -11,14 +11,16 @@ itself after ^C; kill it using task manager or through `kill -9 <PID>`.
 """
 
 
-import unittest
-from src.downloader import download
-from src.crawler import crawl
-import os
+from os import makedirs, remove, rmdir
+from os.path import isfile, join
 from http.server import  SimpleHTTPRequestHandler
 from socketserver import TCPServer
 from threading import Thread
 from random import randint
+import unittest
+
+from src.file_downloader import download
+from src.crawler import crawl
 
 
 class TestDownload(unittest.TestCase):
@@ -28,7 +30,7 @@ class TestDownload(unittest.TestCase):
         def testing_func(httpd: TCPServer):
             url = f"http://localhost:{PORT}/test/websites/testing_website.html"
 
-            path = "test/test_downloads"
+            path = join("test", "test_downloads")
             file_name = None
             override = "Edit name"
 
@@ -38,18 +40,21 @@ class TestDownload(unittest.TestCase):
             for url in to_download:
                 download(url, path, file_name, override, verbose=True)
         
-            with open("test/test_downloads/wikipedia.png", mode="rb") as f:
+            download_path = join("test", "test_downloads", "wikipedia.png")
+
+            with open(download_path, mode="rb") as f:
                 downloaded_file = f.read()
-            with open("test/wikipedia.png", mode='rb') as f:
+            with open(join("test", "wikipedia.png"), mode='rb') as f:
                 correct_file = f.read()
             count = 0
             print("Removing downloaded files...")
-            if os.path.isfile("test/test_downloads/wikipedia.png"):
-                os.remove("test/test_downloads/wikipedia.png")
+            if isfile(download_path):
+                remove(download_path)
                 count += 1
             for i in range(1, 6):
-                if os.path.isfile(f"test/test_downloads/wikipedia ({i}).png"):
-                    os.remove(f"test/test_downloads/wikipedia ({i}).png")
+                override_path = join("test", "test_downloads", f"wikipedia ({i}).png")
+                if isfile(override_path):
+                    remove(override_path)
                     count += 1
             httpd.shutdown()
 
@@ -59,7 +64,7 @@ class TestDownload(unittest.TestCase):
             self.assertEqual(args, [1, 6, 6])
 
         print("Creating directory to download files...")
-        os.makedirs("test/test_downloads", exist_ok=True)
+        makedirs(join("test", "test_downloads"), exist_ok=True)
         
         addr = ("", PORT)
         with TCPServer(addr, SimpleHTTPRequestHandler) as httpd:
@@ -72,7 +77,7 @@ class TestDownload(unittest.TestCase):
             tests_thread.join()
             server_thread.join()
         print("Removing created directory...")
-        os.rmdir("test/test_downloads")
+        rmdir(join("test", "test_downloads"))
         print("Finished!")
         print("=" * 15)
     

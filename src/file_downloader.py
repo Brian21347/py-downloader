@@ -66,7 +66,7 @@ def download(
         path: The location of the directory which is used to store the downloaded file.
         file_name: The file name of the downloaded file; if left empty, will be set to the file name in the url. A file extension will be added to the end to match the file type of the downloaded file.
         override: Settings regarding what to do if the downloaded file matches the name of a pre-existing file in the download directory.
-            `Edit name`: Change the name of the downloaded file by adding a number at the end (chooses the first one that prevents an overlap) such that it will not match the name of the pre-existing file.
+            `Edit name`: Change the name of the downloaded file by adding a number at the end (chooses the first one that prevents an overlap) such that it will not match the name of the pre-existing file(s).
             `Skip`: Do not download the file and do not throw an error.
             `Strict`: Do not download the file and throw an error.
             `Write over`: Write over the pre-existing file.
