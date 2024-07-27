@@ -1,101 +1,191 @@
 """
-This module provides a web crawler that will search a web page
+This module implements an asynchronous crawler.
+
+TODO:
+- Respect robots.txt
+- Find all links in sitemap.xml
+- Provide a user agent
+- Normalize urls (www.example.com and www.example.com/ are the same)
+- Skip filetypes (jpg, pdf, webp) or include only filetypes (html, php, NONE)
+- Max concurrent connections per domain
+- Rate limiting
+- Rate limiting per domain
+- Store connections as graph
+- Store results to database
+- Scale
+
+URI schemes: https://www.iana.org/assignments/uri-schemes/uri-schemes.xhtml
+IP ranges for the google bots: https://developers.google.com/static/search/apis/ipranges/googlebot.json
 """
 
 
-import requests
+import asyncio
+import pathlib
+import time
+import urllib.parse
+from typing import Callable, Iterable
+from warnings import warn
+
 from bs4 import BeautifulSoup
-import warnings
-import os
+import httpx
 
 
-PREFIXES = ["http://", "https://"]
+class UrlFilterer:
+    def __init__(
+        self, 
+        is_allowed_domain: Callable[[str], bool],
+        is_allowed_scheme: Callable[[str], bool], 
+        is_allowed_file_type: Callable[[str], bool],
+    ) -> None:
+        """Creates a UrlFilterer instance which is used by the crawler to check
+        if a link should be accessed.
+
+        Args:
+            is_allowed_domain (Callable[[str], bool]): Checks if the domain of
+                the url is fine to be searched.
+            is_allowed_scheme (Callable[[str], bool]): Checks if the scheme of
+                the url is fine to be searched.
+            is_allowed_file_type (Callable[[str], bool]): Checks if the file
+                type of the url is fine to be searched.
+        """
+        self.is_allowed_domain = is_allowed_domain
+        self.is_allowed_scheme = is_allowed_scheme
+        self.is_allowed_file_type = is_allowed_file_type
+    
+    def check_url(self, base: str, path: str) -> str | None:
+        """_summary_
+
+        Args:
+            base (str): A url that is being searched
+            path (str): A relative path which was referenced from on the url
+                being searched
+
+        Returns:
+            str | None: The url or None if the url should not be searched
+        """
+        url = urllib.parse.urljoin(base, path)
+        url, _frag = urllib.parse.urldefrag(url)
+        parsed = urllib.parse.urlparse(url)
+        ending = pathlib.Path(parsed.path).suffix
+        if (self.is_allowed_domain(parsed.netloc) 
+            and self.is_allowed_scheme(parsed.scheme) 
+            and self.is_allowed_file_type(ending)):
+            return url
 
 
-def get_full_url(url: str, src: str) -> str:
-    if not src: return ""
-    if src[0] != "/": full = url_previous_folder(url) + "/" + src
-    else: full = url_domain(url) + src
-    for pre in PREFIXES:
-        if pre not in full: continue
-        k = pre
-        full = full.removeprefix(pre)
-    return k + os.path.normpath(full).replace("\\", "/")
+class Crawler:
+    """
+    Resp worker: sends a get request to the server linked with the url; turns the response over to the parser
+    Parser: parse the html received by the resp worker to identify urls that need to be crawled (add to parser queue)/potentially has info to be downloaded (add to downloads queue)
+    Downloader: downloads info from the downloads queue 
+    """
+
+    def __init__(self, client: httpx.AsyncClient, urls: Iterable[str], filter: UrlFilterer, workers: int, max_depth: int, max_sites: int) -> None:
+        self.client = client
+        self.initial_urls = set(urls)
+        self.crawling = asyncio.Queue()
+        self.to_crawl = set()
+        self.seen = set()
+        self.selected = set()  # TODO: add an additional filter for URLs to select and go through further processing
+        self.filter = filter
+        self.workers = workers
+        self.max_depth = max_depth
+        self.max_sites = max_sites
+        
+        self.total = 0
+    
+    async def run(self) -> None:
+        [await self.crawling.put(url) for url in self.initial_urls]
+        self.total += len(self.initial_urls)
+        
+        for depth in range(self.max_depth):
+            start_time = time.perf_counter()
+            start_total = self.total
+            workers = [
+                asyncio.create_task(self.worker())
+                for _ in range(self.workers)
+            ]
+
+            await self.crawling.join()
+
+            [worker.cancel() for worker in workers]
+
+            time_used = time.perf_counter() - start_time
+            num_parsed = self.total - start_total
+
+            print(f"Depth {depth + 1} finished in {time_used:.3f} sec after parsing " +
+                  f"{num_parsed} website{'' if num_parsed == 1 else 's'}")
+
+            [await self.crawling.put(url) for url in self.to_crawl]
+            self.to_crawl = set()
+    
+    async def worker(self) -> None:
+        while True:
+            try:
+                await self.process_one()
+            except asyncio.CancelledError:
+                return
+
+    async def process_one(self) -> None:
+        url = await self.crawling.get()
+        try:
+            await self.crawl(url)
+        except Exception as e:
+            print(f"There was an error in processing the request: {e}")
+            # TODO: add retry handling here
+        finally:
+            self.crawling.task_done()
+
+    async def crawl(self, url: str) -> None:
+        await asyncio.sleep(1)
+        resp = await self.client.get(url, follow_redirects=True)
+    
+        soup = BeautifulSoup(resp, features="html.parser")
+        
+        for tag in soup.select("a"):
+            link = self.filter.check_url(str(resp.url), tag.attrs["href"])
+            if link is None or link in self.seen: continue
+            await self.add_url(link)
+    
+    async def add_url(self, url: str) -> None:
+        self.seen.add(url)
+        if self.total >= self.max_sites and self.max_sites != -1: 
+            warn("Max sites reached")  # TODO: find a better solution here
+            return
+        self.total += 1
+        self.to_crawl.add(url)
 
 
-def crawl(
-        url: str, 
-        depth: int, 
-        css_selector: str, 
-        max_sites: int =  -1,
-        allow_duplicate_to_download_links: bool = False,
-        verbose: bool = False,
-        white_list: list[str] = None, 
-        black_list: list[str] = None
-    ) -> tuple[set[str], int, int, int]:
-    if white_list is None: white_list = []
-    if black_list is None: black_list = []
-    visited = set()
-    visited.add(url)
-    visiting = set()
-    visiting.add(url)
-    to_visit = set()
-    to_download = []
-    min_on_page = 1e9
-    max_on_page = 0
-
-    for iter in range(depth):
-        if verbose: print(f"Searching at a depth of {iter}.")
-        for url in visiting:
-            if verbose: print(f"\tSearching: \"{url}\"...")
-            visited.add(url)
-            resp = requests.get(url)
-            soup = BeautifulSoup(resp.text, features="html.parser")
-            
-            num_a_tags = 0
-            for a_tag in soup.select("a"):
-                link = get_full_url(url, a_tag.attrs.get('href'))
-                if not link: continue
-                if white_list and url_domain(link) not in white_list or url_domain(link) in black_list: continue
-                if link in visited or link in to_visit or link in visiting: continue
-                to_visit.add(link)
-                num_a_tags += 1
-            if verbose: print(f"\t\tFound {num_a_tags} links on the page.")
-            
-            count = 0
-            for element in soup.select(css_selector):
-                down_url = get_full_url(url, element.attrs.get("src"))
-                if not down_url: continue
-                if down_url in to_download and not allow_duplicate_to_download_links: continue
-                to_download.append(down_url)
-                count += 1
-            min_on_page = min(min_on_page, count)
-            max_on_page = max(max_on_page, count)
-            if verbose: print(f"\t\tFound {count} elements to download.")
-
-            if len(visited) >= max_sites and max_sites != -1:
-                warnings.warn(f"Crawled to the maximum allowed number of sites; skipped over at least {len(to_visit)}")
-                return to_download, len(visited), min_on_page, max_on_page
-        if verbose: print(f"Found {len(to_visit)} links to visit; visited a total of {len(visited)} pages.")
-        if not len(to_visit): break
-        visiting = to_visit.copy()
-        to_visit = set()
-    return to_download, len(visited), min_on_page, max_on_page
+async def main():
+    """Run the crawler
+    useful testing website: https://crawler-test.com/
+    """
+    start_time = time.perf_counter()
+    filterer = UrlFilterer(
+        lambda x: x in ["crawler-test.com"],
+        lambda x: x in ["http", "https"],
+        lambda x: x in ["html", "php", ""]
+    )
+    async with httpx.AsyncClient() as client:
+        crawler = Crawler(
+            client, 
+            urls=["https://crawler-test.com/"],
+            filter=filterer,
+            workers=10,
+            max_depth=3,
+            max_sites=-1
+        )
+        await crawler.run()
+    end_time = time.perf_counter()
+    
+    seen = sorted(crawler.seen)
+    print("Results:")
+    for url in seen: 
+        print(url)
+    print(f"Selected: {len(crawler.selected)} URLs")
+    print(f"Found: {len(seen)} URLs")
+    print(f"Done in {end_time - start_time:.3f}s")
 
 
-def url_domain(url: str) -> str:
-    prefix = ""
-    for pre in PREFIXES:
-        if not url.__contains__(pre): continue
-        url = url.removeprefix(pre)
-        prefix = pre
-        break
-    i = url.find('/')
-    if i == -1: return url
-    return prefix + url[:i]
-
-
-def url_previous_folder(url: str) -> str:
-    i = url.rfind("/")
-    if i == -1: raise ValueError(f"Url \"{url}\" does not have folder in the level above")
-    return url[:i]
+if __name__ == "__main__":
+    asyncio.run(main(), debug=True)

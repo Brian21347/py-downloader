@@ -20,7 +20,7 @@ from random import randint
 import unittest
 
 from src.file_downloader import download
-from src.crawler import crawl
+from src.simple_crawler import crawl
 
 
 class TestDownload(unittest.TestCase):
